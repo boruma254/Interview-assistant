@@ -62,6 +62,7 @@ On macOS, allow microphone access in System Settings if prompted. On Windows, al
 - **Chat** supports Enter to send, Shift+Enter for a newline, streamed output, cancellation, retry, copying, clearing the conversation, and microphone-to-text sending from the composer.
 - **Pin**, **Compact**, **Minimize**, and **Close** control the visible floating window. `CommandOrControl+Shift+Space` toggles its visibility by default; change the accelerator in Settings if the shortcut conflicts with another app.
 - **Presentation mode** includes a user-controlled checklist and a reminder to verify the sharing app's own preview.
+- **Overlay lab** opens an app-owned local test window. It displays that page's focus, visibility, and fullscreen state so you can observe ordinary window switching and OS fullscreen behavior. It does not load remote content or inspect other applications. See [the research plan](docs/overlay-lab-plan.md) for the evaluation procedure.
 - The app does not collect screen contents, enumerate other applications, or attempt to evade assessment monitoring. No window is guaranteed to be excluded from screenshots, recordings, or remote sessions; actual capture depends on the OS, permissions, sharing app, and capture method.
 
 ## Troubleshooting

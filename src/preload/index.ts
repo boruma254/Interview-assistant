@@ -22,5 +22,6 @@ contextBridge.exposeInMainWorld('desktop', {
   minimize: () => ipcRenderer.invoke('window:minimize') as Promise<void>,
   setWindowMode: (mode: 'toolbar' | 'expanded') => ipcRenderer.invoke('window:set-mode', mode) as Promise<void>,
   setAlwaysOnTop: (value: boolean) => ipcRenderer.invoke('window:set-always-on-top', value) as Promise<boolean>,
+  openOverlayLab: () => ipcRenderer.invoke('lab:open') as Promise<void>,
   close: () => ipcRenderer.invoke('window:close') as Promise<void>,
 });

@@ -237,6 +237,12 @@ footer button { padding: 3px 6px; font-size: 9px; }
 .checklist legend { padding: 0 5px; color: var(--teal); font-size: 11px; font-weight: 700; }
 .checklist label { display: flex; align-items: flex-start; gap: 9px; font-size: 11px; line-height: 1.5; }
 .checklist input { accent-color: var(--teal); margin-top: 2px; }
+.lab-observations { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.lab-observations article { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-raised); }
+.lab-observations strong { color: var(--teal); font-size: 10px; }
+.lab-observations span { color: var(--subtle); font-size: 10px; line-height: 1.5; }
+.lab-steps { padding-left: 22px; font-size: 11px; line-height: 1.7; }
+.lab-steps li { padding-left: 3px; }
 .presentation-actions { margin-top: 14px; }
 .presentation-actions .helper, .presentation-actions .recording-label { margin-right: auto; }
 .settings-panel { display: flex; flex-direction: column; gap: 10px; }
@@ -310,3 +316,4 @@ footer button { padding: 3px 6px; font-size: 9px; }
   .window-actions button { padding: 5px 6px; }
   footer { flex-wrap: wrap; }
 }
+@media (max-width: 620px) { .lab-observations { grid-template-columns: 1fr; } }

@@ -10,6 +10,7 @@ type DesktopBridge = {
   minimize: () => Promise<void>;
   setWindowMode: (mode: 'toolbar' | 'expanded') => Promise<void>;
   setAlwaysOnTop: (value: boolean) => Promise<boolean>;
+  openOverlayLab: () => Promise<void>;
   close: () => Promise<void>;
 };
 

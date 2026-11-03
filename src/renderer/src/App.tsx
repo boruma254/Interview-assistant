@@ -44,6 +44,7 @@ export default function App() {
   const [settingsError, setSettingsError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [presentationOpen, setPresentationOpen] = useState(false);
+  const [overlayLabOpen, setOverlayLabOpen] = useState(false);
   const [toolbarMode, setToolbarMode] = useState(true);
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
   const [presentationChecks, setPresentationChecks] = useState([false, false, false]);
@@ -351,9 +352,10 @@ export default function App() {
       ) : (
       <>
       <nav className="view-tabs" aria-label="App views">
-        <button type="button" aria-pressed={!presentationOpen && !settingsOpen} onClick={() => { setPresentationOpen(false); setSettingsOpen(false); }}>Chat</button>
-        <button type="button" aria-pressed={presentationOpen} onClick={() => { setPresentationOpen(true); setSettingsOpen(false); }}>Presentation mode</button>
-        <button type="button" aria-pressed={settingsOpen} onClick={() => { setSettingsOpen(true); setPresentationOpen(false); }}>Settings</button>
+        <button type="button" aria-pressed={!presentationOpen && !settingsOpen && !overlayLabOpen} onClick={() => { setPresentationOpen(false); setSettingsOpen(false); setOverlayLabOpen(false); }}>Chat</button>
+        <button type="button" aria-pressed={overlayLabOpen} onClick={() => { setOverlayLabOpen(true); setSettingsOpen(false); setPresentationOpen(false); }}>Overlay lab</button>
+        <button type="button" aria-pressed={presentationOpen} onClick={() => { setPresentationOpen(true); setSettingsOpen(false); setOverlayLabOpen(false); }}>Presentation mode</button>
+        <button type="button" aria-pressed={settingsOpen} onClick={() => { setSettingsOpen(true); setPresentationOpen(false); setOverlayLabOpen(false); }}>Settings</button>
       </nav>
 
       {presentationOpen ? (
@@ -374,6 +376,24 @@ export default function App() {
             <button type="button" className="secondary-button" onClick={() => void window.desktop.minimize()}>Minimize app</button>
             <button type="button" className="danger-button" onClick={() => void window.desktop.close()}>Close app</button>
           </div>
+        </section>
+      ) : overlayLabOpen ? (
+        <section className="panel presentation-panel" aria-labelledby="overlay-lab-title">
+          <div className="panel-heading"><span className="eyebrow">LOCAL RESEARCH HARNESS</span><h1 id="overlay-lab-title">Overlay behavior lab</h1></div>
+          <p className="notice">Open a companion-owned test window, then observe focus and window behavior on your desktop. The lab uses synthetic local content and does not inspect other apps or connect to websites.</p>
+          <div className="lab-observations">
+            <article><strong>Browser renderer</strong><span>Reports only its own page focus, visibility, and fullscreen state.</span></article>
+            <article><strong>OS window API</strong><span>Controls ordinary always-on-top and workspace requests.</span></article>
+            <article><strong>Display composition</strong><span>The OS decides how fullscreen and protected display layers behave.</span></article>
+          </div>
+          <ol className="lab-steps">
+            <li>Keep Interview Companion pinned and open the local test window.</li>
+            <li>Switch focus between the test window and another ordinary window; note which is on top.</li>
+            <li>Try the test window’s fullscreen control and record whether the overlay remains visible.</li>
+            <li>Repeat after turning Pin off and, where available, switching workspaces.</li>
+          </ol>
+          <p className="helper">Record the operating system, desktop environment, pin state, and observed result. Fullscreen behavior is controlled by the OS.</p>
+          <div className="presentation-actions"><button type="button" className="primary-button" onClick={() => void window.desktop.openOverlayLab().catch(error => setStatus(error instanceof Error ? error.message : 'Could not open the local test window.'))}>Open local test window</button></div>
         </section>
       ) : settingsOpen ? (
         <form className="panel settings-panel" onSubmit={event => { event.preventDefault(); void saveSettings(settings); }}>
