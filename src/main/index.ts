@@ -15,13 +15,29 @@ const activeRequests = new Map<string, { controller: AbortController; sender: El
 const aiProvider = new OpenAIProvider();
 const transcriptionProvider = new OpenAITranscriptionProvider();
 
-function applyOverlayVisibility(window: BrowserWindow, alwaysOnTop: boolean) {
-  window.setAlwaysOnTop(alwaysOnTop, 'floating');
-  // Spaces / virtual workspaces are separate from the normal window z-order.
-  // Keep the pinned companion on each workspace, but leave fullscreen windows
-  // to the OS so the overlay does not cross secure/fullscreen display layers.
+// function applyOverlayVisibility(window: BrowserWindow, alwaysOnTop: boolean) {
+//   window.setAlwaysOnTop(alwaysOnTop, 'floating');
+//   // Spaces / virtual workspaces are separate from the normal window z-order.
+//   // Keep the pinned companion on each workspace, but leave fullscreen windows
+//   // to the OS so the overlay does not cross secure/fullscreen display layers.
+//   if (process.platform === 'darwin' || process.platform === 'linux') {
+//     window.setVisibleOnAllWorkspaces(alwaysOnTop);
+//   }
+// }
+function applyOverlayVisibility(
+  window: BrowserWindow,
+  alwaysOnTop: boolean
+) {
+  if (window.isDestroyed()) return;
+
+  // Keep the overlay above normal application windows.
+  window.setAlwaysOnTop(alwaysOnTop, 'screen-saver');
+
+  // Keep it visible across virtual desktops on macOS and Linux.
   if (process.platform === 'darwin' || process.platform === 'linux') {
-    window.setVisibleOnAllWorkspaces(alwaysOnTop);
+    window.setVisibleOnAllWorkspaces(alwaysOnTop, {
+      visibleOnFullScreen: alwaysOnTop,
+    });
   }
 }
 
