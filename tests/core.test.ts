@@ -3,8 +3,10 @@ import type { AppSettings } from '../src/shared/contracts';
 import { applyChatEvent, type DisplayMessage } from '../src/shared/chat-state';
 import { PRESENTATION_PRIVACY_NOTICE } from '../src/shared/privacy';
 import { transitionRecordingState } from '../src/shared/recording-state';
-import { DEFAULT_SETTINGS, isAppSettings, isChatRequest, isSettingsInput, isTranscriptRequest } from '../src/shared/settings';
-import { initialToolbarBounds, restoreWindowBounds } from '../src/main/window-manager';
+import { DEFAULT_SETTINGS, isAppSettings, isChatRequest, isSettingsInput, isTranscriptRequest, normalizeStoredSettings } from '../src/shared/settings';
+import { initialToolbarBounds, restoreToolbarBounds, restoreWindowBounds } from '../src/main/window-manager';
+import { collectGuardDiagnostics } from '../src/main/companion-guard';
+import { guardPolicyDenial } from '../src/shared/guard-policy';
 
 const settings: AppSettings = { ...DEFAULT_SETTINGS };
 
@@ -25,9 +27,94 @@ describe('settings and IPC input validation', () => {
     expect(isChatRequest({ requestId: 'req-1', messages: [{ role: 'user', text: '' }], settings })).toBe(false);
   });
 
+  it('migrates valid older settings and defaults missing Companion Guard policy', () => {
+    const stored = { ...settings } as Partial<AppSettings>;
+    delete stored.guard;
+    expect(normalizeStoredSettings(stored)).toEqual({ ...DEFAULT_SETTINGS, ...stored });
+    expect(isAppSettings({ ...settings, guard: { ...settings.guard, allowTranscription: 'yes' } })).toBe(false);
+  });
+
   it('accepts supported, bounded audio uploads only', () => {
-    expect(isTranscriptRequest({ audioBase64: 'YWJj', mimeType: 'audio/webm' })).toBe(true);
+    expect(isTranscriptRequest({ requestId: 'transcript-1', audioBase64: 'YWJj', mimeType: 'audio/webm' })).toBe(true);
     expect(isTranscriptRequest({ audioBase64: 'YWJj', mimeType: 'audio/x-executable' })).toBe(false);
+  });
+});
+
+describe('Companion Guard diagnostics', () => {
+  it('uses documented macOS permission results without treating permission as capture activity', () => {
+    const diagnostics = collectGuardDiagnostics({
+      platform: 'darwin',
+      getMediaAccessStatus: type => type === 'microphone' ? 'granted' : 'denied',
+      window: { visible: true, alwaysOnTop: true },
+      sessionConsent: false,
+    });
+
+    expect(diagnostics.platform).toBe('macos');
+    expect(diagnostics.display.screenRecordingPermission.state).toBe('denied');
+    expect(diagnostics.display.captureActivity.state).toBe('unknown');
+    expect(diagnostics.window).toEqual({ visible: true, alwaysOnTop: true });
+    expect(diagnostics.audio.systemAudioCapture.state).toBe('unsupported');
+  });
+
+  it('falls back to unsupported statuses without querying media permissions on other systems', () => {
+    let queried = false;
+    const diagnostics = collectGuardDiagnostics({
+      platform: 'linux',
+      getMediaAccessStatus: () => {
+        queried = true;
+        return 'granted';
+      },
+      window: null,
+      sessionConsent: false,
+    });
+
+    expect(diagnostics.platform).toBe('unsupported');
+    expect(diagnostics.audio.microphonePermission.state).toBe('unsupported');
+    expect(diagnostics.display.screenRecordingPermission.state).toBe('unsupported');
+    expect(queried).toBe(false);
+  });
+
+  it('reports the Windows screen permission as not applicable and capture activity as unknown', () => {
+    let queries = 0;
+    const getMediaAccessStatus = (): 'granted' => {
+      queries += 1;
+      return 'granted';
+    };
+    const diagnostics = collectGuardDiagnostics({
+      platform: 'win32',
+      getMediaAccessStatus,
+      window: null,
+      sessionConsent: true,
+    });
+
+    expect(diagnostics.platform).toBe('windows');
+    expect(diagnostics.display.screenRecordingPermission.state).toBe('not-applicable');
+    expect(diagnostics.display.captureActivity.state).toBe('unknown');
+    expect(diagnostics.window).toEqual({ visible: null, alwaysOnTop: null });
+    expect(diagnostics.device.restrictions.state).toBe('unknown');
+    expect(queries).toBe(1);
+  });
+
+  it('reports a documented restricted permission but does not infer general management status', () => {
+    const diagnostics = collectGuardDiagnostics({
+      platform: 'darwin',
+      getMediaAccessStatus: type => type === 'microphone' ? 'restricted' : 'granted',
+      window: { visible: false, alwaysOnTop: false },
+      sessionConsent: true,
+    });
+    expect(diagnostics.device.restrictions.state).toBe('restriction-reported');
+    expect(diagnostics.display.captureActivity.state).toBe('unknown');
+  });
+});
+
+describe('Companion Guard policy enforcement', () => {
+  it('requires session consent and applies restricted and per-feature policy', () => {
+    expect(guardPolicyDenial(settings.guard, false, false, 'ai')).toMatch(/session consent/);
+    expect(guardPolicyDenial({ ...settings.guard, restrictedMode: true }, true, false, 'microphone')).toMatch(/restricted-mode/);
+    expect(guardPolicyDenial({ ...settings.guard, allowAiAssistance: false }, true, false, 'ai')).toMatch(/AI assistance is disabled/);
+    expect(guardPolicyDenial({ ...settings.guard, allowTranscription: false }, true, false, 'transcription')).toMatch(/Transcription is disabled/);
+    expect(guardPolicyDenial(settings.guard, true, true, 'ai')).toMatch(/Privacy Mode is active/);
+    expect(guardPolicyDenial(settings.guard, true, false, 'ai')).toBeNull();
   });
 });
 
@@ -71,7 +158,7 @@ describe('window restoration and presentation privacy', () => {
   ];
 
   it('places the compact toolbar within the primary display work area', () => {
-    expect(initialToolbarBounds([displays[0]])).toEqual({ x: 330, y: 42, width: 780, height: 156 });
+    expect(initialToolbarBounds([displays[0]])).toEqual({ x: 260, y: 42, width: 920, height: 120 });
     expect(initialToolbarBounds([{ x: 0, y: 0, width: 420, height: 120 }])).toEqual({ x: 0, y: 0, width: 420, height: 120 });
   });
 
@@ -79,6 +166,11 @@ describe('window restoration and presentation privacy', () => {
     expect(restoreWindowBounds({ x: 1500, y: 90, width: 500, height: 700 }, displays).x).toBe(1500);
     expect(restoreWindowBounds({ x: -5000, y: -5000, width: 500, height: 700 }, displays).x).toBe(500);
     expect(restoreWindowBounds({ x: 0, y: 0, width: 100, height: 100 }, displays).width).toBe(440);
+  });
+
+  it('restores compact toolbar bounds without treating them as expanded-window bounds', () => {
+    expect(restoreToolbarBounds({ x: 120, y: 50, width: 900, height: 120 }, displays)).toEqual({ x: 120, y: 50, width: 900, height: 120 });
+    expect(restoreToolbarBounds({ x: -5000, y: -5000, width: 900, height: 120 }, displays)).toEqual({ x: 260, y: 42, width: 920, height: 120 });
   });
 
   it('explains that screen-capture exclusion is not guaranteed', () => {

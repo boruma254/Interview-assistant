@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AppSettings, SettingsInput, SettingsSnapshot, WindowBounds } from '../shared/contracts';
-import { DEFAULT_SETTINGS, isAppSettings } from '../shared/settings';
+import { DEFAULT_SETTINGS, normalizeStoredSettings } from '../shared/settings';
 
 type SecureStorage = {
   isEncryptionAvailable: () => boolean;
@@ -31,7 +31,7 @@ export class SettingsStore {
       const parsed: unknown = JSON.parse(await readFile(this.filePath, 'utf8'));
       if (!parsed || typeof parsed !== 'object') throw new Error('Settings file has an invalid format.');
       const stored = parsed as Record<string, unknown>;
-      const savedSettings = isAppSettings(stored.settings) ? stored.settings : DEFAULT_SETTINGS;
+      const savedSettings = normalizeStoredSettings(stored.settings) ?? DEFAULT_SETTINGS;
       const settings = stored.formatVersion === 1
         ? savedSettings
         : { ...savedSettings, alwaysOnTop: true };
@@ -41,7 +41,7 @@ export class SettingsStore {
         ...(typeof stored.encryptedApiKey === 'string' ? { encryptedApiKey: stored.encryptedApiKey } : {}),
         ...(isWindowBounds(stored.bounds) ? { bounds: stored.bounds } : {}),
       };
-      if (!isAppSettings(stored.settings)) console.error('Saved settings were invalid; defaults are in use.');
+      if (!normalizeStoredSettings(stored.settings)) console.error('Saved settings were invalid; defaults are in use.');
       if (stored.formatVersion !== 1) await this.persist(this.data);
     } catch (error) {
       if (isNodeError(error) && error.code === 'ENOENT') return;

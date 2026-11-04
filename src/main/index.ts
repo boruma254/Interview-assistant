@@ -1,61 +1,63 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, safeStorage, screen, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, safeStorage, screen, session, shell, systemPreferences } from 'electron';
 import { resolve, join } from 'node:path';
 import dotenv from 'dotenv';
-import type { ChatEvent, ChatRequest, SettingsInput, TranscriptRequest } from '../shared/contracts';
+import type { ChatEvent, ChatRequest, GuardDiagnostics, SettingsInput, TranscriptRequest } from '../shared/contracts';
 import { isChatRequest, isSettingsInput, isTranscriptRequest } from '../shared/settings';
 import { OpenAIProvider, OpenAITranscriptionProvider } from './ai-service';
 import { SettingsStore } from './settings-store';
-import { initialToolbarBounds, restoreWindowBounds } from './window-manager';
+import { PrivacyManager, type PrivacyWindow } from './privacy-manager';
+import { collectGuardDiagnostics } from './companion-guard';
+import { guardPolicyDenial, type GuardOperation } from '../shared/guard-policy';
+import { initialToolbarBounds, restoreToolbarBounds, restoreWindowBounds } from './window-manager';
 
 let mainWindow: BrowserWindow | null = null;
 let overlayLabWindow: BrowserWindow | null = null;
 let settingsStore: SettingsStore;
 let shortcut = '';
 const activeRequests = new Map<string, { controller: AbortController; sender: Electron.WebContents }>();
+const activeTranscriptions = new Map<string, { controller: AbortController; sender: Electron.WebContents }>();
 const aiProvider = new OpenAIProvider();
 const transcriptionProvider = new OpenAITranscriptionProvider();
+let privacyManager: PrivacyManager;
+let guardSessionConsent = false;
 
-// function applyOverlayVisibility(window: BrowserWindow, alwaysOnTop: boolean) {
-//   window.setAlwaysOnTop(alwaysOnTop, 'floating');
-//   // Spaces / virtual workspaces are separate from the normal window z-order.
-//   // Keep the pinned companion on each workspace, but leave fullscreen windows
-//   // to the OS so the overlay does not cross secure/fullscreen display layers.
-//   if (process.platform === 'darwin' || process.platform === 'linux') {
-//     window.setVisibleOnAllWorkspaces(alwaysOnTop);
-//   }
-// }
-function applyOverlayVisibility(
-  window: BrowserWindow,
-  alwaysOnTop: boolean
-) {
+function applyOverlayVisibility(window: PrivacyWindow, alwaysOnTop: boolean) {
   if (window.isDestroyed()) return;
 
-  // Keep the overlay above normal application windows.
-  window.setAlwaysOnTop(alwaysOnTop, 'screen-saver');
+  // Use the standard floating layer for ordinary windows.
+  window.setAlwaysOnTop(alwaysOnTop, 'floating');
 
-  // Keep it visible across virtual desktops on macOS and Linux.
-  if (process.platform === 'darwin' || process.platform === 'linux') {
-    window.setVisibleOnAllWorkspaces(alwaysOnTop, {
-      visibleOnFullScreen: alwaysOnTop,
-    });
+  // macOS requires the explicit option to keep pinned windows visible in fullscreen Spaces.
+  if (process.platform === 'darwin') {
+    window.setVisibleOnAllWorkspaces(alwaysOnTop, { visibleOnFullScreen: alwaysOnTop });
+  } else if (process.platform === 'linux') {
+    window.setVisibleOnAllWorkspaces(alwaysOnTop);
   }
+}
+
+function applyPinToOpenWindows(alwaysOnTop: boolean) {
+  if (mainWindow && !mainWindow.isDestroyed()) applyOverlayVisibility(mainWindow, alwaysOnTop);
+  if (overlayLabWindow && !overlayLabWindow.isDestroyed()) applyOverlayVisibility(overlayLabWindow, alwaysOnTop);
 }
 
 function createWindow() {
   const workAreas = screen.getAllDisplays().map(display => display.workArea);
   const savedBounds = settingsStore.getBounds();
-  const savedToolbarBounds = savedBounds && savedBounds.height <= 240 && savedBounds.width >= 520 ? savedBounds : undefined;
+  const savedToolbarBounds = savedBounds && savedBounds.height <= 140 && savedBounds.height >= 100 && savedBounds.width >= 520 ? savedBounds : undefined;
   const bounds = savedToolbarBounds
-    ? restoreWindowBounds(savedToolbarBounds, workAreas)
+    ? restoreToolbarBounds(savedToolbarBounds, workAreas)
     : initialToolbarBounds(workAreas);
   mainWindow = new BrowserWindow({
     ...bounds,
     minWidth: 520,
-    minHeight: 140,
+    minHeight: 100,
     title: 'Interview Companion',
     alwaysOnTop: settingsStore.snapshot().settings.alwaysOnTop,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
     autoHideMenuBar: true,
-    backgroundColor: '#0b1020',
+    hasShadow: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -77,7 +79,7 @@ function createWindow() {
 
   let saveTimeout: NodeJS.Timeout | undefined;
   const saveBounds = () => {
-    if (!mainWindow || mainWindow.isMinimized() || mainWindow.isMaximized()) return;
+    if (!mainWindow || mainWindow.isMinimized() || mainWindow.isMaximized() || privacyManager?.isActive()) return;
     clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => {
       if (!mainWindow) return;
@@ -97,9 +99,26 @@ function registerShortcut(nextShortcut: string) {
   if (globalShortcut.register(nextShortcut, () => {
     if (!mainWindow) return;
     if (mainWindow.isVisible()) mainWindow.hide();
+    else if (privacyManager?.isActive()) showPrivacyPrompt();
     else { mainWindow.show(); mainWindow.focus(); }
   })) shortcut = nextShortcut;
   else console.warn(`Could not register keyboard shortcut "${nextShortcut}". It may be in use by another application.`);
+}
+
+function showPrivacyPrompt() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const area = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
+  const width = Math.min(560, area.width);
+  const height = Math.min(500, area.height);
+  mainWindow.setMinimumSize(Math.min(360, width), Math.min(320, height));
+  mainWindow.setBounds({
+    x: area.x + Math.max(0, Math.round((area.width - width) / 2)),
+    y: area.y + Math.max(0, Math.round((area.height - height) / 2)),
+    width,
+    height,
+  });
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function assertTrustedSender(sender: Electron.WebContents) {
@@ -107,7 +126,34 @@ function assertTrustedSender(sender: Electron.WebContents) {
 }
 
 function sendChatEvent(sender: Electron.WebContents, event: ChatEvent) {
-  if (!sender.isDestroyed()) sender.send('ai:chunk', event);
+  if (!sender.isDestroyed() && !privacyManager?.isActive()) sender.send('ai:chunk', event);
+}
+
+function assertPrivacyInactive() {
+  if (privacyManager?.isActive()) throw new Error('Screen-Sharing Privacy Mode is active. Turn it off before starting AI or transcription.');
+}
+
+function assertGuardOperationAllowed(operation: GuardOperation) {
+  const reason = guardPolicyDenial(
+    settingsStore.snapshot().settings.guard,
+    guardSessionConsent,
+    privacyManager?.isActive() ?? false,
+    operation,
+  );
+  if (reason) throw new Error(reason);
+}
+
+function cancelActiveWork() {
+  for (const { controller } of activeRequests.values()) controller.abort();
+  for (const { controller } of activeTranscriptions.values()) controller.abort();
+}
+
+function cancelAIRequests() {
+  for (const { controller } of activeRequests.values()) controller.abort();
+}
+
+function cancelTranscriptions() {
+  for (const { controller } of activeTranscriptions.values()) controller.abort();
 }
 
 function readableAIError(error: unknown): string {
@@ -126,15 +172,21 @@ ipcMain.handle('settings:get', event => {
 
 ipcMain.handle('settings:save', async (event, value: unknown) => {
   assertTrustedSender(event.sender);
+  assertPrivacyInactive();
   if (!isSettingsInput(value)) throw new Error('Settings were invalid and were not saved.');
+  const previousPolicy = settingsStore.snapshot().settings.guard;
   const snapshot = await settingsStore.save(value as SettingsInput);
-  if (mainWindow) applyOverlayVisibility(mainWindow, snapshot.settings.alwaysOnTop);
+  const restrictedModeEnabled = !previousPolicy.restrictedMode && snapshot.settings.guard.restrictedMode;
+  if (restrictedModeEnabled || (previousPolicy.allowAiAssistance && !snapshot.settings.guard.allowAiAssistance)) cancelAIRequests();
+  if (restrictedModeEnabled || (previousPolicy.allowTranscription && !snapshot.settings.guard.allowTranscription)) cancelTranscriptions();
+  applyPinToOpenWindows(snapshot.settings.alwaysOnTop);
   registerShortcut(snapshot.settings.keyboardShortcut);
   return snapshot;
 });
 
 ipcMain.handle('ai:stream', async (event, value: unknown) => {
   assertTrustedSender(event.sender);
+  assertGuardOperationAllowed('ai');
   if (!isChatRequest(value)) throw new Error('The chat request was invalid.');
   const request = value as ChatRequest;
   if (activeRequests.has(request.requestId)) throw new Error('A request with this ID is already running.');
@@ -145,13 +197,11 @@ ipcMain.handle('ai:stream', async (event, value: unknown) => {
   const context = request.messages.slice(-(request.settings.historyLimit + 1));
   try {
     await aiProvider.stream(context, request.settings, apiKey, controller.signal, delta => {
-      sendChatEvent(event.sender, { requestId: request.requestId, delta });
+      if (!controller.signal.aborted) sendChatEvent(event.sender, { requestId: request.requestId, delta });
     });
-    sendChatEvent(event.sender, { requestId: request.requestId, done: true });
+    if (!controller.signal.aborted) sendChatEvent(event.sender, { requestId: request.requestId, done: true });
   } catch (error) {
-    if (controller.signal.aborted) {
-      sendChatEvent(event.sender, { requestId: request.requestId, done: true, cancelled: true });
-    } else {
+    if (!controller.signal.aborted) {
       console.error('AI streaming request failed:', error);
       sendChatEvent(event.sender, { requestId: request.requestId, done: true, error: readableAIError(error) });
     }
@@ -169,44 +219,56 @@ ipcMain.handle('ai:cancel', (event, requestId: unknown) => {
 
 ipcMain.handle('voice:transcribe', async (event, value: unknown) => {
   assertTrustedSender(event.sender);
+  assertGuardOperationAllowed('transcription');
   if (!isTranscriptRequest(value)) throw new Error('The audio recording is invalid or too large.');
   const request = value as TranscriptRequest;
+  if (activeTranscriptions.has(request.requestId)) throw new Error('A transcription with this ID is already running.');
   const apiKey = settingsStore.apiKey();
   if (!apiKey) throw new Error('Add an OpenAI API key in Settings before transcribing audio.');
+  const controller = new AbortController();
+  activeTranscriptions.set(request.requestId, { controller, sender: event.sender });
   try {
-    return await transcriptionProvider.transcribe(request.audioBase64, request.mimeType, apiKey, settingsStore.snapshot().settings.apiEndpoint);
+    return await transcriptionProvider.transcribe(request.audioBase64, request.mimeType, apiKey, settingsStore.snapshot().settings.apiEndpoint, controller.signal);
   } catch (error) {
     console.error('Audio transcription failed:', error);
     if (error && typeof error === 'object' && 'status' in error && Number(error.status) === 429) {
       throw new Error('The speech provider rate limit was reached. Please try again later.');
     }
     throw new Error('Transcription failed. Check your network, API key, audio format, and provider access.');
+  } finally {
+    activeTranscriptions.delete(request.requestId);
   }
 });
 
 ipcMain.handle('window:minimize', event => {
   assertTrustedSender(event.sender);
+  assertPrivacyInactive();
   mainWindow?.minimize();
 });
 ipcMain.handle('window:close', event => {
   assertTrustedSender(event.sender);
+  assertPrivacyInactive();
   mainWindow?.close();
 });
 ipcMain.handle('window:set-always-on-top', (event, value: unknown) => {
   assertTrustedSender(event.sender);
+  assertPrivacyInactive();
   if (typeof value !== 'boolean') throw new Error('Pin setting must be a boolean.');
-  if (mainWindow) applyOverlayVisibility(mainWindow, value);
-  return value;
+  return settingsStore.save({ settings: { ...settingsStore.snapshot().settings, alwaysOnTop: value } }).then(snapshot => {
+    applyPinToOpenWindows(snapshot.settings.alwaysOnTop);
+    return snapshot.settings.alwaysOnTop;
+  });
 });
 ipcMain.handle('window:set-mode', (event, value: unknown) => {
   assertTrustedSender(event.sender);
-  if (value !== 'toolbar' && value !== 'expanded') throw new Error('Window mode must be toolbar or expanded.');
+  assertPrivacyInactive();
+  if (value !== 'toolbar' && value !== 'expanded' && value !== 'answer') throw new Error('Window mode was invalid.');
   if (!mainWindow) return;
   const workArea = screen.getDisplayMatching(mainWindow.getBounds()).workArea;
-  const width = value === 'toolbar' ? Math.min(780, workArea.width) : Math.min(460, workArea.width);
-  const height = value === 'toolbar' ? Math.min(156, workArea.height) : Math.min(740, workArea.height);
-  const minWidth = Math.min(value === 'toolbar' ? 520 : 360, width);
-  const minHeight = Math.min(value === 'toolbar' ? 140 : 480, height);
+  const width = value === 'toolbar' ? Math.min(920, workArea.width) : value === 'answer' ? Math.min(760, workArea.width) : Math.min(460, workArea.width);
+  const height = value === 'toolbar' ? Math.min(120, workArea.height) : value === 'answer' ? Math.min(620, workArea.height) : Math.min(740, workArea.height);
+  const minWidth = Math.min(value === 'toolbar' ? 520 : value === 'answer' ? 560 : 360, width);
+  const minHeight = Math.min(value === 'toolbar' ? 100 : 480, height);
   mainWindow.setMinimumSize(minWidth, minHeight);
   const x = workArea.x + Math.max(0, Math.round((workArea.width - width) / 2));
   const y = value === 'toolbar'
@@ -217,6 +279,7 @@ ipcMain.handle('window:set-mode', (event, value: unknown) => {
 
 ipcMain.handle('lab:open', event => {
   assertTrustedSender(event.sender);
+  assertPrivacyInactive();
   if (overlayLabWindow && !overlayLabWindow.isDestroyed()) {
     overlayLabWindow.show();
     overlayLabWindow.focus();
@@ -228,6 +291,7 @@ ipcMain.handle('lab:open', event => {
     minWidth: 620,
     minHeight: 480,
     title: 'Interview Companion — Local Overlay Lab',
+    alwaysOnTop: settingsStore.snapshot().settings.alwaysOnTop,
     autoHideMenuBar: true,
     backgroundColor: '#f4f7fb',
     webPreferences: {
@@ -236,6 +300,7 @@ ipcMain.handle('lab:open', event => {
       sandbox: true,
     },
   });
+  applyOverlayVisibility(overlayLabWindow, settingsStore.snapshot().settings.alwaysOnTop);
   overlayLabWindow.on('closed', () => { overlayLabWindow = null; });
   overlayLabWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   overlayLabWindow.webContents.on('will-navigate', navigationEvent => navigationEvent.preventDefault());
@@ -254,16 +319,94 @@ const visibility=document.querySelector('#visibility'),focus=document.querySelec
   void overlayLabWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(labHtml)}`);
 });
 
+ipcMain.handle('privacy:get-status', event => {
+  assertTrustedSender(event.sender);
+  return privacyManager.status();
+});
+ipcMain.handle('privacy:enable', async event => {
+  assertTrustedSender(event.sender);
+  return privacyManager.enable();
+});
+ipcMain.handle('privacy:disable', async event => {
+  assertTrustedSender(event.sender);
+  return privacyManager.disable(async () => {
+    const options = {
+      type: 'warning',
+      title: 'Leave Screen-Sharing Privacy Mode?',
+      message: 'Restore the Interview Companion interface?',
+      detail: 'The microphone will remain stopped. You must start it again yourself.',
+      buttons: ['Keep Privacy Mode', 'Restore Interface'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    } satisfies Electron.MessageBoxOptions;
+    const result = mainWindow && !mainWindow.isDestroyed()
+      ? await dialog.showMessageBox(mainWindow, options)
+      : await dialog.showMessageBox(options);
+    return result.response === 1;
+  });
+});
+ipcMain.handle('privacy:hide-prompt', event => {
+  assertTrustedSender(event.sender);
+  privacyManager.hidePrivacyPrompt();
+});
+
+ipcMain.handle('guard:get-diagnostics', (event): GuardDiagnostics => {
+  assertTrustedSender(event.sender);
+  const currentWindow = mainWindow && !mainWindow.isDestroyed()
+    ? { visible: mainWindow.isVisible(), alwaysOnTop: mainWindow.isAlwaysOnTop() }
+    : null;
+  return collectGuardDiagnostics({
+    platform: process.platform,
+    getMediaAccessStatus: type => systemPreferences.getMediaAccessStatus(type),
+    window: currentWindow,
+    sessionConsent: guardSessionConsent,
+  });
+});
+ipcMain.handle('guard:confirm-session', (event, confirmed: unknown) => {
+  assertTrustedSender(event.sender);
+  if (confirmed !== true) throw new Error('Session consent must be explicitly confirmed.');
+  guardSessionConsent = true;
+  event.sender.send('guard:consent-changed', true);
+  return true;
+});
+ipcMain.handle('guard:revoke-session', event => {
+  assertTrustedSender(event.sender);
+  guardSessionConsent = false;
+  cancelActiveWork();
+  event.sender.send('guard:consent-changed', false);
+  return true;
+});
+
 dotenv.config({ path: resolve(process.cwd(), '.env') });
 
 app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const mediaTypes = 'mediaTypes' in details ? details.mediaTypes : undefined;
     const audioOnly = permission === 'media' && mediaTypes?.includes('audio') && !mediaTypes.includes('video');
-    callback(webContents === mainWindow?.webContents && Boolean(audioOnly));
+    const policy = settingsStore?.snapshot().settings.guard;
+    const microphoneAllowed = policy
+      && !guardPolicyDenial(policy, guardSessionConsent, privacyManager?.isActive() ?? false, 'microphone');
+    callback(webContents === mainWindow?.webContents && Boolean(audioOnly) && microphoneAllowed);
   });
   settingsStore = new SettingsStore(app.getPath('userData'), safeStorage);
   await settingsStore.load();
+  privacyManager = new PrivacyManager({
+    getMainWindow: () => mainWindow,
+    getAuxiliaryWindow: () => overlayLabWindow,
+    getAlwaysOnTop: () => settingsStore.snapshot().settings.alwaysOnTop,
+    restoreAlwaysOnTopPreference: async value => {
+      const snapshot = await settingsStore.save({ settings: { ...settingsStore.snapshot().settings, alwaysOnTop: value } });
+      applyPinToOpenWindows(snapshot.settings.alwaysOnTop);
+    },
+    applyAlwaysOnTop: (window, value) => applyOverlayVisibility(window, value),
+    cancelRequests: cancelActiveWork,
+    onStatusChange: status => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send('privacy:changed', status);
+      mainWindow.webContents.send('privacy:share-safe-mode', status.active);
+    },
+  });
   createWindow();
   registerShortcut(settingsStore.snapshot().settings.keyboardShortcut);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
@@ -275,6 +418,7 @@ app.whenReady().then(async () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   for (const { controller } of activeRequests.values()) controller.abort();
+  for (const { controller } of activeTranscriptions.values()) controller.abort();
 });
 
 app.on('window-all-closed', () => {

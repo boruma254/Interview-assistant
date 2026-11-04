@@ -13,6 +13,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   alwaysOnTop: true,
   keyboardShortcut: 'CommandOrControl+Shift+Space',
   microphoneId: '',
+  guard: {
+    restrictedMode: false,
+    allowMicrophoneRecording: true,
+    allowTranscription: true,
+    allowAiAssistance: true,
+  },
 };
 
 export function isAppSettings(value: unknown): value is AppSettings {
@@ -43,7 +49,27 @@ export function isAppSettings(value: unknown): value is AppSettings {
     && settings.keyboardShortcut.length <= 80
     && /^(CommandOrControl|Command|Control|Alt|Option|Shift)(\+(CommandOrControl|Command|Control|Alt|Option|Shift))*\+[A-Za-z0-9]+$/.test(String(settings.keyboardShortcut))
     && typeof settings.microphoneId === 'string'
-    && settings.microphoneId.length <= 500;
+    && settings.microphoneId.length <= 500
+    && isGuardPolicySettings(settings.guard);
+}
+
+function isGuardPolicySettings(value: unknown): value is AppSettings['guard'] {
+  if (!value || typeof value !== 'object') return false;
+  const policy = value as Record<string, unknown>;
+  return typeof policy.restrictedMode === 'boolean'
+    && typeof policy.allowMicrophoneRecording === 'boolean'
+    && typeof policy.allowTranscription === 'boolean'
+    && typeof policy.allowAiAssistance === 'boolean';
+}
+
+export function normalizeStoredSettings(value: unknown): AppSettings | null {
+  if (!value || typeof value !== 'object') return null;
+  const stored = value as Record<string, unknown>;
+  const guard = stored.guard && typeof stored.guard === 'object'
+    ? { ...DEFAULT_SETTINGS.guard, ...(stored.guard as Record<string, unknown>) }
+    : DEFAULT_SETTINGS.guard;
+  const migrated = { ...DEFAULT_SETTINGS, ...stored, guard };
+  return isAppSettings(migrated) ? migrated : null;
 }
 
 function isAllowedEndpoint(endpoint: string): boolean {
@@ -83,10 +109,12 @@ export function isChatRequest(value: unknown): value is {
   });
 }
 
-export function isTranscriptRequest(value: unknown): value is { audioBase64: string; mimeType: string } {
+export function isTranscriptRequest(value: unknown): value is { requestId: string; audioBase64: string; mimeType: string } {
   if (!value || typeof value !== 'object') return false;
   const request = value as Record<string, unknown>;
-  return typeof request.audioBase64 === 'string'
+  return typeof request.requestId === 'string'
+    && /^[\w-]{1,80}$/.test(request.requestId)
+    && typeof request.audioBase64 === 'string'
     && request.audioBase64.length > 0
     && request.audioBase64.length <= 30_000_000
     && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(request.audioBase64)

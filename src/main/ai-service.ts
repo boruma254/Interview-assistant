@@ -12,7 +12,7 @@ export interface AIProvider {
 }
 
 export interface TranscriptionProvider {
-  transcribe(audioBase64: string, mimeType: string, apiKey: string, endpoint?: string): Promise<string>;
+  transcribe(audioBase64: string, mimeType: string, apiKey: string, endpoint: string, signal: AbortSignal): Promise<string>;
 }
 
 export class OpenAIProvider implements AIProvider {
@@ -48,7 +48,7 @@ export class OpenAIProvider implements AIProvider {
 }
 
 export class OpenAITranscriptionProvider implements TranscriptionProvider {
-  async transcribe(audioBase64: string, mimeType: string, apiKey: string, endpoint = ''): Promise<string> {
+  async transcribe(audioBase64: string, mimeType: string, apiKey: string, endpoint: string, signal: AbortSignal): Promise<string> {
     const client = new OpenAI({
       apiKey,
       ...(endpoint.trim() ? { baseURL: endpoint.trim() } : {}),
@@ -57,7 +57,7 @@ export class OpenAITranscriptionProvider implements TranscriptionProvider {
     });
     const extension = mimeType === 'audio/mp4' ? 'm4a' : mimeType === 'audio/ogg' ? 'ogg' : mimeType === 'audio/wav' ? 'wav' : 'webm';
     const file = new File([Buffer.from(audioBase64, 'base64')], `recording.${extension}`, { type: mimeType });
-    const result = await client.audio.transcriptions.create({ file, model: 'gpt-4o-mini-transcribe' });
+    const result = await client.audio.transcriptions.create({ file, model: 'gpt-4o-mini-transcribe' }, { signal });
     return result.text;
   }
 }

@@ -37,8 +37,13 @@ function setupMicrophoneRecorder() {
 
 async function renderExpandedApp() {
   render(<App />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Expand chat and settings' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Expand Interview Companion' }));
   await screen.findByRole('navigation', { name: 'App views' });
+  fireEvent.click(screen.getByRole('button', { name: 'Companion Guard' }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: /I am permitted to use this assistant/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm consent for this session' }));
+  await screen.findByText('Session consent confirmed');
+  fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
 }
 
 describe('Interview Companion interface', () => {
@@ -50,26 +55,105 @@ describe('Interview Companion interface', () => {
   });
 
   beforeEach(() => {
+    let sessionConsent = false;
     window.desktop = {
       getSettings: vi.fn().mockResolvedValue({ settings: DEFAULT_SETTINGS, hasApiKey: true }),
-      saveSettings: vi.fn().mockResolvedValue({ settings: DEFAULT_SETTINGS, hasApiKey: true }),
+      saveSettings: vi.fn().mockImplementation(({ settings }) => Promise.resolve({ settings, hasApiKey: true })),
       streamChat: vi.fn().mockReturnValue(() => {}),
       transcribe: vi.fn().mockResolvedValue('How do you handle a difficult project?'),
       minimize: vi.fn(),
       setWindowMode: vi.fn().mockResolvedValue(undefined),
-      setAlwaysOnTop: vi.fn(),
+      setAlwaysOnTop: vi.fn().mockResolvedValue(true),
       close: vi.fn(),
+      getPrivacyStatus: vi.fn().mockResolvedValue({ active: false, alwaysOnTop: true }),
+      enablePrivacyMode: vi.fn().mockResolvedValue({ active: true, alwaysOnTop: true }),
+      disablePrivacyMode: vi.fn().mockResolvedValue(true),
+      hidePrivacyPrompt: vi.fn().mockResolvedValue(undefined),
+      onPrivacyStateChanged: vi.fn().mockReturnValue(() => {}),
+      openOverlayLab: vi.fn().mockResolvedValue(undefined),
+      getGuardDiagnostics: vi.fn().mockImplementation(() => Promise.resolve({
+        checkedAt: new Date().toISOString(),
+        platform: 'macos',
+        sessionConsent,
+        window: { visible: true, alwaysOnTop: true },
+        display: {
+          screenRecordingPermission: { state: 'granted', detail: 'Screen permission granted.' },
+          captureActivity: { state: 'unknown', detail: 'Capture activity is unknown.' },
+        },
+        audio: {
+          microphonePermission: { state: 'granted', detail: 'Microphone permission granted.' },
+          systemAudioCapture: { state: 'unsupported', detail: 'System audio is not captured.' },
+        },
+        device: { restrictions: { state: 'unknown', detail: 'Managed-device restrictions are unknown.' } },
+      })),
+      confirmGuardSession: vi.fn().mockImplementation(() => {
+        sessionConsent = true;
+        return Promise.resolve(true);
+      }),
+      revokeGuardSession: vi.fn().mockImplementation(() => {
+        sessionConsent = false;
+        return Promise.resolve(true);
+      }),
+      onGuardConsentChanged: vi.fn().mockReturnValue(() => {}),
+    };
+    window.privacyControls = {
+      enterShareSafeMode: vi.fn().mockResolvedValue(true),
+      exitShareSafeMode: vi.fn().mockResolvedValue(true),
+      onModeChanged: vi.fn().mockReturnValue(() => {}),
     };
     Element.prototype.scrollIntoView = vi.fn();
   });
 
-  it('starts in a compact, clearly identified toolbar without screen capture', async () => {
+  it('starts in the compact toolbar and expands on request', async () => {
     render(<App />);
-    expect(await screen.findByText('Visible assistant · No screen capture')).toBeTruthy();
-    expect(screen.getByRole('textbox', { name: 'Message' }).getAttribute('placeholder')).toBe('Ask Interview Companion…');
-    fireEvent.click(screen.getByRole('button', { name: 'Expand chat and settings' }));
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveProperty('placeholder', 'Expand to review Companion Guard');
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Interview Companion' }));
     await screen.findByRole('navigation', { name: 'App views' });
     expect(window.desktop.setWindowMode).toHaveBeenCalledWith('expanded');
+  });
+
+  it('requires explicit session consent and displays unknown capture diagnostics', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand Interview Companion' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Companion Guard' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Run diagnostics' }));
+    expect(await screen.findByText('Other capture activity')).toBeTruthy();
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Confirm consent for this session' })).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByRole('checkbox', { name: /I am permitted to use this assistant/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm consent for this session' }));
+    await screen.findByText('Session consent confirmed');
+    expect(window.desktop.confirmGuardSession).toHaveBeenCalledOnce();
+  });
+
+  it('applies restricted mode to chat and microphone controls', async () => {
+    const { getUserMedia, stopTrack } = setupMicrophoneRecorder();
+    await renderExpandedApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Start microphone recording' }));
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Companion Guard' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Restricted mode/ }));
+    expect(stopTrack).toHaveBeenCalledOnce();
+    await waitFor(() => expect(window.desktop.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: expect.objectContaining({ guard: expect.objectContaining({ restrictedMode: true }) }) }),
+    ));
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Start microphone recording' })).toHaveProperty('disabled', true);
+  });
+
+  it('starts and explicitly transcribes microphone audio from the Guard dashboard', async () => {
+    const { getUserMedia, stopTrack } = setupMicrophoneRecorder();
+    await renderExpandedApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Companion Guard' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start microphone capture' }));
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: 'Stop and discard' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop and transcribe' }));
+    await waitFor(() => expect(window.desktop.transcribe).toHaveBeenCalledOnce());
+    expect(stopTrack).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveProperty('value', 'How do you handle a difficult project?');
   });
 
   it('renders the welcome message and submits a manual chat question', async () => {
@@ -128,7 +212,45 @@ describe('Interview Companion interface', () => {
       expect.objectContaining({ messages: expect.arrayContaining([expect.objectContaining({ role: 'user', text: 'How do you handle a difficult project?' })]) }),
       expect.any(Function),
     ));
+    await waitFor(() => expect(window.desktop.setWindowMode).toHaveBeenCalledWith('answer'));
+    expect(await screen.findByRole('region', { name: 'Latest answer' })).toBeTruthy();
     expect(stopTrack).toHaveBeenCalledOnce();
+  });
+
+  it('stops active microphone capture and requires explicit confirmation to leave privacy mode', async () => {
+    const { getUserMedia, stopTrack } = setupMicrophoneRecorder();
+    await renderExpandedApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Start microphone recording' }));
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect((screen.getByRole('checkbox', { name: /Always on Top/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('switch', { name: /Privacy mode/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Screen-Sharing Mode is active' })).toBeTruthy();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(window.privacyControls.enterShareSafeMode).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore interface…' }));
+    await waitFor(() => expect(window.privacyControls.exitShareSafeMode).toHaveBeenCalledOnce());
+    await screen.findByRole('heading', { name: 'Settings' });
+    expect(getUserMedia).toHaveBeenCalledOnce();
+  });
+
+  it('stops microphone capture when share-safe mode is reported over preload IPC', async () => {
+    let reportMode: ((enabled: boolean) => void) | undefined;
+    window.privacyControls.onModeChanged = vi.fn(callback => {
+      reportMode = callback;
+      return () => {};
+    });
+    const { getUserMedia, stopTrack } = setupMicrophoneRecorder();
+    await renderExpandedApp();
+    fireEvent.click(await screen.findByRole('button', { name: 'Start microphone recording' }));
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledOnce());
+    act(() => reportMode?.(true));
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(await screen.findByRole('heading', { name: 'Screen-Sharing Mode is active' })).toBeTruthy();
+    expect(screen.getByText(/Microphone and transcription/)).toBeTruthy();
+    act(() => reportMode?.(false));
+    expect(getUserMedia).toHaveBeenCalledOnce();
   });
 
   it('shows the screen-sharing privacy checklist in presentation mode', async () => {

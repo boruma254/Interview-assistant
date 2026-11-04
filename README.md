@@ -7,7 +7,7 @@ A visible, user-controlled Electron desktop app for permitted interview practice
 - macOS or Windows for the desktop application. Linux is useful for development but is not a packaged target here.
 - Node.js 22.12 or newer (required by the packaged Electron runtime). Use a currently supported LTS release for production builds.
 - npm 10 or newer. This repository uses npm and commits a `package-lock.json`; use `npm ci` for reproducible installs.
-- An OpenAI API key for chat and transcription. Requests are made only after you submit a chat message or explicitly select **Transcribe**.
+- An OpenAI API key for chat and transcription. After confirming consent for the current app session, requests are made only after you submit a chat message or explicitly select **Transcribe**.
 
 ```bash
 npm ci
@@ -52,16 +52,19 @@ The app's custom API endpoint sends the API key and prompts to that endpoint; us
 
 ## Microphone workflow and permissions
 
-Click the microphone icon beside the chat input to request microphone permission and start recording. An animated recording indicator and elapsed time show that capture is active. Click the pause icon to stop capture and immediately transcribe into the editable message box without sending it. Click the send icon while recording to stop, transcribe, and submit the transcript for an AI response. Transcription is batch-based; live partial transcription is not implemented. Recording does not start in the background, and system audio is not captured.
+After confirming session consent in **Companion Guard**, click the microphone icon beside the chat input to request microphone permission and start recording. An animated recording indicator, elapsed time, and (in Guard) an input-level meter show app-owned capture state. Click the pause icon to stop capture and immediately transcribe into the editable message box without sending it. Click the send icon while recording to stop, transcribe, and submit the transcript for an AI response. Transcription is batch-based; live partial transcription is not implemented. Recording does not start in the background, and system audio is not captured.
 
 On macOS, allow microphone access in System Settings if prompted. On Windows, allow desktop microphone access in Privacy & security settings. A selected microphone is used when available; the system default is used otherwise. Browser/Electron codec support can vary. The app reports permission denial, missing devices, unsupported recording, and transcription failures in its status area. Voice activity requires an explicit user action.
 
 ## Interface and privacy
 
-- The app opens as a compact, labeled Interview Companion toolbar with a message field and microphone/send controls. It stays above normal application windows by default; use **Pinned** to turn that off. **Expand** opens the full chat and settings; **Toolbar** returns to the compact view. The toolbar does not capture or analyze screen contents.
+- The app opens as a compact, labeled Interview Companion toolbar with a microphone, a wide question field, and a send control. The bar is translucent so the desktop can show through; the question field remains more opaque for readability. Hover the upper-right corner to reveal the expand control; the expanded view contains Pin, chat, settings, and the local overlay lab. The toolbar does not capture or analyze screen contents.
+- When you send a microphone recording, the app opens a larger answer-only view. Click its microphone button to return to the compact toolbar; click the toolbar microphone to record again. Stopping a recording for editing does not submit it or open the answer view.
 - **Chat** supports Enter to send, Shift+Enter for a newline, streamed output, cancellation, retry, copying, clearing the conversation, and microphone-to-text sending from the composer.
-- **Pin**, **Compact**, **Minimize**, and **Close** control the visible floating window. `CommandOrControl+Shift+Space` toggles its visibility by default; change the accelerator in Settings if the shortcut conflicts with another app.
+- **Pin**, **Compact**, **Minimize**, and **Close** control the visible floating window. Pin requests visibility above ordinary windows and, on macOS, across fullscreen Spaces; OS-controlled secure or exclusive-fullscreen windows may still cover it. `CommandOrControl+Shift+Space` toggles its visibility by default; change the accelerator in Settings if the shortcut conflicts with another app.
 - **Presentation mode** includes a user-controlled checklist and a reminder to verify the sharing app's own preview.
+- **Companion Guard** reports the app window, documented OS permission status where available, microphone capture and input levels, explicit unknown capture states, session consent, and persisted usage policies. Restricted mode blocks AI assistance, microphone capture, and transcription in the main process. It does not detect all screen/audio monitoring or inspect third-party security software. See the [Companion Guard guide](docs/companion-guard.md).
+- **Screen-Sharing Privacy Mode** is available in Settings. It stops microphone tracks, cancels active AI/transcription work, blocks new requests, and hides the companion and local lab window. To restore, use the keyboard shortcut and confirm; microphone capture stays off. The app does not call `setContentProtection()` and does not claim capture exclusion. See the [privacy mode guide, capture-protection notes, and manual test checklist](docs/screen-sharing-privacy.md).
 - **Overlay lab** opens an app-owned local test window. It displays that page's focus, visibility, and fullscreen state so you can observe ordinary window switching and OS fullscreen behavior. It does not load remote content or inspect other applications. See [the research plan](docs/overlay-lab-plan.md) for the evaluation procedure.
 - The app does not collect screen contents, enumerate other applications, or attempt to evade assessment monitoring. No window is guaranteed to be excluded from screenshots, recordings, or remote sessions; actual capture depends on the OS, permissions, sharing app, and capture method.
 

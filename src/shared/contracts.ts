@@ -18,11 +18,65 @@ export type AppSettings = {
   alwaysOnTop: boolean;
   keyboardShortcut: string;
   microphoneId: string;
+  guard: GuardPolicySettings;
+};
+
+export type GuardPolicySettings = {
+  restrictedMode: boolean;
+  allowMicrophoneRecording: boolean;
+  allowTranscription: boolean;
+  allowAiAssistance: boolean;
+};
+
+export type GuardPermissionState =
+  | 'granted'
+  | 'denied'
+  | 'restricted'
+  | 'not-determined'
+  | 'unknown'
+  | 'unsupported'
+  | 'not-applicable';
+
+export type GuardPermissionCheck = {
+  state: GuardPermissionState;
+  detail: string;
+};
+
+export type GuardDiagnostics = {
+  checkedAt: string;
+  platform: 'macos' | 'windows' | 'unsupported';
+  sessionConsent: boolean;
+  window: {
+    visible: boolean | null;
+    alwaysOnTop: boolean | null;
+  };
+  display: {
+    screenRecordingPermission: GuardPermissionCheck;
+    captureActivity: {
+      state: 'unknown';
+      detail: string;
+    };
+  };
+  audio: {
+    microphonePermission: GuardPermissionCheck;
+    systemAudioCapture: GuardPermissionCheck;
+  };
+  device: {
+    restrictions: {
+      state: 'restriction-reported' | 'unknown';
+      detail: string;
+    };
+  };
 };
 
 export type SettingsSnapshot = {
   settings: AppSettings;
   hasApiKey: boolean;
+};
+
+export type PrivacyStatus = {
+  active: boolean;
+  alwaysOnTop: boolean;
 };
 
 export type SettingsInput = {
@@ -46,6 +100,7 @@ export type ChatEvent = {
 };
 
 export type TranscriptRequest = {
+  requestId: string;
   audioBase64: string;
   mimeType: string;
 };
